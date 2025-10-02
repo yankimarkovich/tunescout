@@ -30,10 +30,10 @@ export const authAPI = {
   },
 };
 
-// Playlist endpoints (we'll implement these later)
+// Playlist endpoints
 export const playlistAPI = {
-  create: async (description) => {
-    const response = await api.post('/api/playlist/create', { description });
+  generate: async (description) => {
+    const response = await api.post('/api/playlist/generate', { description });
     return response.data;
   },
 };
