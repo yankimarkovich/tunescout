@@ -7,7 +7,7 @@ import loginHandler from './api/auth/login.js';
 import callbackHandler from './api/auth/callback.js';
 import verifyAuth from './middleware/verifyAuth.js';
 import meHandler from './api/auth/me.js';
-import generatePlaylistHandler from './api/playlist/generate.js';
+import generatePlaylistHandler, { getProgress } from './api/playlist/generate.js';
 
 dotenv.config();
 
@@ -27,6 +27,7 @@ app.get('/api/auth/login', loginHandler);
 app.get('/api/auth/callback', callbackHandler);
 app.get('/api/auth/me', verifyAuth, meHandler);
 app.post('/api/playlist/generate', verifyAuth, generatePlaylistHandler);
+app.get('/api/playlist/progress', verifyAuth, getProgress);  // ← NEW LINE
 
 // Health check
 app.get('/api/health', (req, res) => {

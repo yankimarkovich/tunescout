@@ -1,6 +1,9 @@
 // Load environment variables FIRST
 import 'dotenv/config';
 
+// Store progress in memory (simple solution)
+const progressStore = new Map();
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -16,111 +19,132 @@ export default async function handler(req, res) {
       });
     }
 
+    const requestId = Date.now().toString();
+    progressStore.set(requestId, { messages: [], status: 'running' });
+
+    const sendProgress = (message) => {
+      console.log('📤 Progress:', message);
+      const data = progressStore.get(requestId);
+      data.messages.push(message);
+      progressStore.set(requestId, data);
+    };
+
     console.log('🎯 Generating playlist for prompt:', prompt);
+    sendProgress('🤖 Analyzing your request...');
 
-    // Step 1: Analyze prompt with Claude to get search queries
-    console.log('🤖 Asking Claude for search strategy...');
-    const searchStrategy = await getSearchQueriesFromClaude(prompt);
-    
-    console.log('📝 Playlist name:', searchStrategy.playlistName);
-    console.log('🔍 Search queries:', searchStrategy.queries);
+    // Start generation in background
+    (async () => {
+      try {
+        // Step 1: Analyze prompt with Claude
+        console.log('🤖 Asking Claude for search strategy...');
+        const searchStrategy = await getSearchQueriesFromClaude(prompt);
+        
+        console.log('📝 Playlist name:', searchStrategy.playlistName);
+        sendProgress(`📝 Creating: ${searchStrategy.playlistName}`);
 
-    // Step 2: Search Spotify directly with those queries
-    console.log('🎵 Searching Spotify...');
-    const foundTracks = await searchSpotifyWithQueries(searchStrategy.queries, spotifyAccessToken);
+        // Step 2: Search Spotify
+        console.log('🎵 Searching Spotify...');
+        sendProgress('🔍 Searching for songs...');
+        
+        const foundTracks = await searchSpotifyWithQueries(searchStrategy.queries, spotifyAccessToken, sendProgress);
 
-    console.log(`✅ Found ${foundTracks.length} tracks`);
+        if (foundTracks.length === 0) {
+          const data = progressStore.get(requestId);
+          data.status = 'error';
+          data.error = 'No tracks found';
+          progressStore.set(requestId, data);
+          return;
+        }
 
-    if (foundTracks.length === 0) {
-      return res.status(400).json({
-        error: 'No tracks found on Spotify',
-        message: 'Try a different prompt or be more specific'
-      });
-    }
+        // Step 3: Create playlist
+        sendProgress('🎵 Creating your playlist...');
+        
+        const userResponse = await fetch('https://api.spotify.com/v1/me', {
+          headers: { 'Authorization': `Bearer ${spotifyAccessToken}` }
+        });
+        
+        const userData = await userResponse.json();
+        const spotifyUserId = userData.id;
+        
+        const createPlaylistResponse = await fetch(`https://api.spotify.com/v1/users/${spotifyUserId}/playlists`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${spotifyAccessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            name: searchStrategy.playlistName,
+            description: 'Created by AI',
+            public: false
+          })
+        });
 
-    // Step 3: Create playlist
-    console.log('🎵 Creating playlist...');
-    
-    // Get user's Spotify ID first
-    const userResponse = await fetch('https://api.spotify.com/v1/me', {
-      headers: { 'Authorization': `Bearer ${spotifyAccessToken}` }
-    });
-    
-    if (!userResponse.ok) {
-      throw new Error('Failed to get user info');
-    }
-    
-    const userData = await userResponse.json();
-    const spotifyUserId = userData.id;
-    
-    console.log(`👤 Creating playlist for user: ${spotifyUserId}`);
-    
-    const createPlaylistResponse = await fetch(`https://api.spotify.com/v1/users/${spotifyUserId}/playlists`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${spotifyAccessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        name: searchStrategy.playlistName,
-        description: 'Created by AI',
-        public: false
-      })
-    });
+        if (!createPlaylistResponse.ok) {
+          throw new Error('Failed to create playlist');
+        }
 
-    if (!createPlaylistResponse.ok) {
-      const errorData = await createPlaylistResponse.json();
-      console.error('❌ Spotify error details:', JSON.stringify(errorData, null, 2));
-      console.error('Request was to:', `https://api.spotify.com/v1/users/${spotifyUserId}/playlists`);
-      console.error('Request body:', JSON.stringify({
-        name: 'AI Playlist',
-        description: 'Created by AI',
-        public: false
-      }));
-      throw new Error(`Failed to create playlist: ${errorData.error?.message || createPlaylistResponse.status}`);
-    }
+        const playlist = await createPlaylistResponse.json();
 
-    const playlist = await createPlaylistResponse.json();
+        // Step 4: Add tracks
+        sendProgress(`✨ Adding ${foundTracks.length} songs...`);
+        
+        await fetch(`https://api.spotify.com/v1/playlists/${playlist.id}/tracks`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${spotifyAccessToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            uris: foundTracks.map(t => t.uri)
+          })
+        });
 
-    // Step 4: Add tracks
-    const addTracksResponse = await fetch(`https://api.spotify.com/v1/playlists/${playlist.id}/tracks`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${spotifyAccessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        uris: foundTracks.map(t => t.uri)
-      })
-    });
+        // Success!
+        const data = progressStore.get(requestId);
+        data.status = 'complete';
+        data.result = {
+          playlist: {
+            id: playlist.id,
+            name: playlist.name,
+            url: playlist.external_urls.spotify,
+            trackCount: foundTracks.length
+          }
+        };
+        progressStore.set(requestId, data);
+        sendProgress('✅ Complete!');
 
-    if (!addTracksResponse.ok) {
-      throw new Error('Failed to add tracks');
-    }
+      } catch (error) {
+        console.error('❌ Error:', error);
+        const data = progressStore.get(requestId);
+        data.status = 'error';
+        data.error = error.message;
+        progressStore.set(requestId, data);
+      }
+    })();
 
-    console.log(`✅ Done - ${foundTracks.length} tracks added`);
-
-    return res.status(200).json({
-      success: true,
-      playlist: {
-        id: playlist.id,
-        name: playlist.name,
-        url: playlist.external_urls.spotify,
-        trackCount: foundTracks.length
-      },
-      tracks: foundTracks.map(t => ({
-        name: t.name,
-        artist: t.artist
-      }))
-    });
+    // Return the request ID immediately
+    return res.json({ requestId });
 
   } catch (error) {
     console.error('❌ Error:', error);
     return res.status(500).json({
-      error: 'Failed to generate playlist',
+      error: 'Failed to start generation',
       message: error.message
     });
   }
+}
+
+// Endpoint to poll progress
+export async function getProgress(req, res) {
+  const { requestId } = req.query;
+  
+  const data = progressStore.get(requestId);
+  
+  if (!data) {
+    return res.status(404).json({ error: 'Request not found' });
+  }
+
+  return res.json(data);
 }
 
 // Ask Claude to create Spotify search queries (NO WEB SEARCH)
@@ -184,9 +208,10 @@ No other text.`
 }
 
 // Search Spotify with multiple queries
-async function searchSpotifyWithQueries(queries, spotifyAccessToken) {
+async function searchSpotifyWithQueries(queries, spotifyAccessToken, sendProgress) {
   const foundTracks = [];
   const seenUris = new Set();
+  let totalAdded = 0;
 
   for (const query of queries) {
     console.log(`🔍 Searching Spotify for: "${query}"`);
@@ -212,7 +237,13 @@ async function searchSpotifyWithQueries(queries, spotifyAccessToken) {
                 artist: track.artists[0]?.name
               });
               seenUris.add(track.uri);
+              totalAdded++;
               console.log(`  ✅ Added: ${track.name} - ${track.artists[0]?.name}`);
+              
+              // Send progress update for every song added
+              if (sendProgress) {
+                sendProgress(`♪ Added song ${totalAdded}: ${track.name}`);
+              }
             }
           }
         }
