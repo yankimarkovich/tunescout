@@ -5,7 +5,7 @@ const API_URL = import.meta.env.VITE_API_URL;
 // Create axios instance with default config
 const api = axios.create({
   baseURL: API_URL,
-  withCredentials: true, // Important: sends cookies with requests
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -14,13 +14,10 @@ const api = axios.create({
 // Auth endpoints
 export const authAPI = {
   login: () => {
-    // Redirect to backend login endpoint
     window.location.href = `${API_URL}/api/auth/login`;
   },
 
   logout: async () => {
-    // For now, just clear client-side state
-    // Later we can add a backend logout endpoint
     return Promise.resolve();
   },
 
@@ -32,8 +29,16 @@ export const authAPI = {
 
 // Playlist endpoints
 export const playlistAPI = {
-  generate: async (description) => {
-    const response = await api.post('/api/playlist/generate', { description });
+  generate: async (prompt) => {
+    // Get current auth data first
+    const authData = await authAPI.checkAuth();
+    
+    const response = await api.post('/api/playlist/generate', {
+      prompt: prompt,
+      spotifyAccessToken: authData.spotifyAccessToken,
+      userId: authData.userId
+    });
+    
     return response.data;
   },
 };
